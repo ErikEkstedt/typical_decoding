@@ -12,11 +12,13 @@ mpl.use("agg")
 
 # MODEL_NAME = "gpt2"
 MODEL_NAME = "EleutherAI/gpt-neo-1.3B"
-TEMP = 0.9
+TEMP = 1.0
 P = 0.1
+OTHER_P = 0.9
 N_BEAMS = 3
-N = 10
-PROMPT = "In a shocking finding, scientists discovered a herd of unicorns living in a remote, previously unexplored valley"
+N = 20
+# PROMPT = "In a shocking finding, scientists discovered a herd of unicorns living in a remote, previously unexplored valley"
+PROMPT = "This movie was the best that I have ever seen!"
 
 
 def update_session_state():
@@ -58,11 +60,12 @@ def forward_pass():
     with torch.no_grad():
         n = info["input_ids"].shape[-1]
         # TYPICAL
-        typical_ids = model.sample(
+        typical_ids = model.generate(
             info["input_ids"].to(model.device),
             max_length=n + N,
-            typical_p=P,
             do_sample=True,
+            typical_p=P,
+            top_k=0,
             temperature=TEMP,
             pad_token_id=tokenizer.eos_token_id,
         )
@@ -71,12 +74,14 @@ def forward_pass():
         )
 
         # Other
-        other_ids = model.sample(
+        other_ids = model.generate(
             info["input_ids"].to(model.device),
             max_length=n + N,
+            early_stopping=True,
             do_sample=True,
-            top_p=P,
-            temperature=TEMP,
+            top_p=OTHER_P,
+            top_k=0,
+            # temperature=TEMP,
             pad_token_id=tokenizer.eos_token_id,
         )
         other_info = get_typical_information(
@@ -84,31 +89,30 @@ def forward_pass():
         )
 
     st.session_state.figure, _ = plot_info(
-        info["entropy"][0],
-        info["nll"][0],
-        info["epsilon"][0],
-        info["tokens"][0],
-        ylim=[0, 14],
-    )
-
-    st.session_state.other_figure, _ = plot_info(
-        other_info["entropy"][0][n:],
-        other_info["nll"][0][n:],
-        other_info["epsilon"][0][n:],
-        other_info["tokens"][0][n:],
-        ylim=[0, 14],
-    )
-
-    st.session_state.typical_figure, _ = plot_info(
-        typical_info["entropy"][0][n:],
-        typical_info["nll"][0][n:],
-        typical_info["epsilon"][0][n:],
-        typical_info["tokens"][0][n:],
+        entropy=info["entropy"][0],
+        nll=info["nll"][0],
+        epsilon=info["epsilon"][0],
+        tokens=info["tokens"][0],
         ylim=[0, 14],
     )
 
     st.session_state.other_output = tokenizer.decode(other_ids[0][n:])
+    st.session_state.other_figure, _ = plot_info(
+        entropy=other_info["entropy"][0][n:],
+        nll=other_info["nll"][0][n:],
+        epsilon=other_info["epsilon"][0][n:],
+        tokens=other_info["tokens"][0][n:],
+        ylim=[0, 14],
+    )
+
     st.session_state.typical_output = tokenizer.decode(typical_ids[0][n:])
+    st.session_state.typical_figure, _ = plot_info(
+        entropy=typical_info["entropy"][0][n:],
+        nll=typical_info["nll"][0][n:],
+        epsilon=typical_info["epsilon"][0][n:],
+        tokens=typical_info["tokens"][0][n:],
+        ylim=[0, 14],
+    )
 
 
 if __name__ == "__main__":
@@ -190,11 +194,11 @@ if __name__ == "__main__":
 
         c1, c2 = st.columns([1, 1])
         with c1:
-            st.subheader("Continuation Typical Sampling (p=0.1)")
+            st.subheader(f"Continuation Typical Sampling (p={P})")
             st.markdown(st.session_state.typical_output)
             st.pyplot(st.session_state.typical_figure)
 
         with c2:
-            st.subheader("Continuation Other Sampling (p=0.1)")
+            st.subheader(f"Continuation Other (p={OTHER_P})")
             st.markdown(st.session_state.other_output)
             st.pyplot(st.session_state.other_figure)
