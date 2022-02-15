@@ -9,11 +9,10 @@
 * Run [streamlit](https://streamlit.io/) interface 
 
   ```bash
-  streamlit run typical_decoding.py
+  streamlit run typical_decoding_interface.py
   ```
 
 -----
 
 
 ![streamlit image](assets/streamlit_img.png)
-
