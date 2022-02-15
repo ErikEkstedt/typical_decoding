@@ -57,6 +57,7 @@ def forward_pass():
     model = st.session_state.model
     tokenizer = st.session_state.tokenizer
     info = get_typical_information(prompt, model, tokenizer, to_device="cpu")
+
     with torch.no_grad():
         n = info["input_ids"].shape[-1]
         # TYPICAL
@@ -89,8 +90,8 @@ def forward_pass():
         )
 
     st.session_state.figure, _ = plot_info(
-        entropy=info["entropy"][0],
-        nll=info["nll"][0],
+        avg_expected_information=info["avg_expected_information"][0],
+        information_correct=info["information_correct"][0],
         epsilon=info["epsilon"][0],
         tokens=info["tokens"][0],
         ylim=[0, 14],
@@ -98,8 +99,8 @@ def forward_pass():
 
     st.session_state.other_output = tokenizer.decode(other_ids[0][n:])
     st.session_state.other_figure, _ = plot_info(
-        entropy=other_info["entropy"][0][n:],
-        nll=other_info["nll"][0][n:],
+        avg_expected_information=other_info["avg_expected_information"][0][n:],
+        information_correct=other_info["information_correct"][0][n:],
         epsilon=other_info["epsilon"][0][n:],
         tokens=other_info["tokens"][0][n:],
         ylim=[0, 14],
@@ -107,8 +108,8 @@ def forward_pass():
 
     st.session_state.typical_output = tokenizer.decode(typical_ids[0][n:])
     st.session_state.typical_figure, _ = plot_info(
-        entropy=typical_info["entropy"][0][n:],
-        nll=typical_info["nll"][0][n:],
+        avg_expected_information=typical_info["avg_expected_information"][0][n:],
+        information_correct=typical_info["information_correct"][0][n:],
         epsilon=typical_info["epsilon"][0][n:],
         tokens=typical_info["tokens"][0][n:],
         ylim=[0, 14],
@@ -121,6 +122,8 @@ if __name__ == "__main__":
     with st.container():
         st.markdown(
             """
+            WIP...
+
             # Typical Decoding for Natural Language Generation
 
             * Clara Meister, Tiago Pimentel, Gian Wiher and Ryan Cotterell, 2022 
@@ -133,55 +136,47 @@ if __name__ == "__main__":
             $$
             q(\\textbf{y}) = \prod_{t=1}^{T} q(y_t | \\textbf{y}_{<t})
             $$
+
+            ## Language Modelling
+
+            Model the distribution via maximization of the log-likelhood of a training corpus $\\mathcal{C}$.
+
+            $$ 
+            L( \\theta , \mathcal{C}) = - \sum_{y \in \mathcal{C}} log \ q( \\textbf{y} ), \quad \\text{(eq. 2)}
+            $$
+
+            ## Information
+
+            The information of $\\textbf{y}$ is quantified as the negative log-probability
+
+            $$
+            I(\\textbf{y}) := -log \ p(\\textbf{y})
+            $$
+
+            which over the symbols of the sequence can be expressed as
+
+            $$
+            I(\\textbf{y}) = \sum_{t=1}^{|\\textbf{y}|} I(y_t) = - \sum_{t=1}^{|\\textbf{y}|} log \ p(y_t | \\textbf{y}_{<t}), \quad \\text{(eq. 5)}
+            $$
+
+            Average Expected Information, Entropy
+
+            $$
+            avg\_exp\_info = - \sum_{y_t \in \mathcal{V}} p(y_t | \\textbf{y}_{<t}) \ log \ p(y_t | \\textbf{y}_{<t}), \quad \\text{(eq. 6)}
+            $$
+
+            ## Efficient Information Theoretic Messages
+
+            1. Maximize information throughput
+                - If we send many packages with low information $\\to \\textbf{BAD}$ .
+            2. Minimize miscommunication (lost packages/messages)
+                - If we "spend" maximum information on a message and it is lost $\\to \\textbf{BAD}$ .
+
+            A uniform distribution of Information is both robust to miscommunication while not "wasting channel time".
             """
         )
 
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            st.markdown(
-                """
-                    ## Language Modelling
-
-                    Model the distribution via maximization of the log-likelhood of a training corpus $\\mathcal{C}$.
-
-                    $$ 
-                    L( \\theta , \mathcal{C}) = - \sum_{y \in \mathcal{C}} log \ q( \\textbf{y} ), \quad \\text{(eq. 2)}
-                    $$
-                    """
-            )
-            st.markdown(
-                """
-                    ## Information
-
-                    The information of $\\textbf{y}$ is quantified as the negative log-probability
-
-                    $$
-                    I(\\textbf{y}) := -log \ p(\\textbf{y})
-                    $$
-
-                    which over the symbols of the sequence can be expressed as
-
-                    $$
-                    I(\\textbf{y}) = \sum_{t=1}^{T} I(y_t) = - \sum_{t=1}^{T} log \ p(y_t | \\textbf{y}_{<t}), \quad \\text{(eq. 5)}
-                    $$
-                    """
-            )
-        with c2:
-            st.markdown(
-                """
-                    ## Efficient Information Theoretic Messages
-
-                    1. Maximize information throughput
-                        - If we send many packages with low information $\\to \\textbf{BAD}$ .
-                    2. Minimize miscommunication (lost packages/messages)
-                        - If we "spend" maximum information on a message and it is lost $\\to \\textbf{BAD}$ .
-
-                    A uniform distribution of Information is both robust to miscommunication while not "wasting channel time".
-                    """
-            )
-
     with st.container():
-        st.subheader("Expected Information Content")
         st.button("update", on_click=forward_pass)
         st.pyplot(st.session_state.figure)
 
@@ -195,10 +190,19 @@ if __name__ == "__main__":
         c1, c2 = st.columns([1, 1])
         with c1:
             st.subheader(f"Continuation Typical Sampling (p={P})")
-            st.markdown(st.session_state.typical_output)
+            st.markdown(f'"{st.session_state.typical_output}"')
             st.pyplot(st.session_state.typical_figure)
 
         with c2:
             st.subheader(f"Continuation Other (p={OTHER_P})")
-            st.markdown(st.session_state.other_output)
+            st.markdown(f"'{st.session_state.other_output}'")
             st.pyplot(st.session_state.other_figure)
+
+        st.markdown(
+            """
+            same thing asked thrice..
+            * Typical decoding should have smaller epsilon? 
+            * Should on average have information\_correct close to avg\_expected\_information?
+            * bars should be of similar heights?
+            """
+        )

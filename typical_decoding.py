@@ -1,9 +1,18 @@
+import math
 import torch
 import torch.nn.functional as F
 import einops
 from torch.distributions import Categorical
 from transformers import GPTNeoForCausalLM, GPT2Tokenizer, GPT2LMHeadModel
 import matplotlib.pyplot as plt
+
+
+def bits_to_nats(bits):
+    return bits / torch.tensor([math.e]).log2()
+
+
+def nats_to_bits(nats):
+    return nats / torch.tensor([2.0]).log()
 
 
 def load_model(model_name="gpt2"):
@@ -18,33 +27,59 @@ def load_model(model_name="gpt2"):
     return model, tokenizer
 
 
-def plot_info(entropy, nll, epsilon, tokens, ylim=None, plot=False):
+def plot_info(
+    avg_expected_information,
+    information_correct,
+    epsilon,
+    tokens,
+    shifted=True,
+    ylim=None,
+    plot=False,
+):
     fig, ax = plt.subplots(2, 1, figsize=(9, 6))
 
-    n = len(entropy)
+    if shifted:
+        avg_expected_information = torch.tensor(
+            [0] + avg_expected_information[:-1].tolist()
+        )
+        information_correct = torch.tensor([0] + information_correct[:-1].tolist())
+        epsilon = torch.tensor([0] + epsilon[:-1].tolist())
+        tokens = tokens + [""]
+
+    n = len(avg_expected_information)
     x = torch.arange(n)
+    ax[0].bar(
+        x - 0.2,
+        avg_expected_information,
+        label="avg_expected_information (bits)",
+        width=0.4,
+    )
+    ax[0].bar(
+        x + 0.2,
+        information_correct,
+        label="nll: information (correct labels) (bits)",
+        width=0.4,
+    )
     ax[0].hlines(
-        y=entropy.mean(),
+        y=avg_expected_information.mean(),
         xmin=-0.3,
         xmax=n + 0.3,
         linestyle="dashed",
         color="b",
         linewidth=1.0,
-        label=f"avg entropy {round(entropy.mean().item(),1)}",
+        label=f"avg expected information {round(avg_expected_information.mean().item(),1)}",
     )
     ax[0].hlines(
-        y=nll.mean(),
+        y=information_correct.mean(),
         xmin=-0.3,
         xmax=n + 0.3,
         linestyle="dashed",
         color="orange",
         linewidth=1.0,
-        label=f"avg nll {round(nll.mean().item(),1)}",
+        label=f"avg information (correct labels) {round(information_correct.mean().item(),1)}",
     )
-    ax[0].bar(x - 0.2, entropy, label="avg entropy(Y)", width=0.4)
-    ax[0].bar(x + 0.2, nll, label="nll(y_t)", width=0.4)
     ax[0].legend(loc="upper left")
-    ax[0].set_ylabel("avg entropy")
+    ax[0].set_ylabel("avg expected info")
     ax[0].set_xticks(range(len(tokens)))
     ax[0].set_xticklabels(tokens, rotation=65)
     if ylim is not None:
@@ -60,15 +95,6 @@ def plot_info(entropy, nll, epsilon, tokens, ylim=None, plot=False):
         color="blue",
         linewidth=1.0,
         label=f"avg eps = {round(epsilon.mean().item(),2)}",
-    )
-    ax[1].hlines(
-        y=epsilon.abs().mean(),
-        xmin=-0.3,
-        xmax=n + 0.3,
-        linestyle="dashed",
-        color="orange",
-        linewidth=1.0,
-        label=f"avg |eps| = {round(epsilon.abs().mean().item(),2)}",
     )
     ax[1].set_ylabel("epsilon")
     ax[1].legend(loc="upper left")
@@ -92,6 +118,32 @@ def get_typical_information(prompt, model, tokenizer, input_ids=None, to_device=
     out = model(input_ids)
     logits = out.logits
 
+    # Calculate Average Expected Information (Entropy) in bits
+
+    # Normalize model output as probabilites
+    probs = logits.softmax(dim=-1)[:, :-1].cpu()
+
+    # Calculate the information/entropy content for associated with each symbol
+    information = -probs.log2()
+
+    # Entropy
+    # Calculate the average expected information
+    # Weighted sum by (normalized/sum-to-one) probabilites -> Average Weighted Entropy
+    avg_expected_information = (probs * information).sum(-1)
+
+    # Select the actual symbols in the message
+    # should be a cleaner way?
+    targets = input_ids[:, 1:]
+    seq = torch.arange(targets.shape[-1]).repeat(targets.shape[0], 1)
+    batch = torch.arange(targets.shape[0]).unsqueeze(-1)
+    information_correct = information[batch, seq, targets]
+
+    # Negative Log Likelihood as provided by F.cross_entropy (nats)
+    nll = bits_to_nats(information_correct)
+
+    # epsilon: avg_expected_information - information gained with correct token
+    epsilon = avg_expected_information - information_correct
+
     # extract tokens
     tokens = []
     for b in range(input_ids.shape[0]):
@@ -99,37 +151,23 @@ def get_typical_information(prompt, model, tokenizer, input_ids=None, to_device=
         tmp_tokens = [t.replace("Ġ", "") for t in tmp_tokens]
         tokens.append(tmp_tokens)
 
-    # get distribution
-    q = Categorical(logits=logits)
-    entropy = q.entropy()
-    entropy = torch.cat(
-        (torch.zeros((entropy.shape[0], 1), device=entropy.device), entropy[:, :-1]),
-        dim=1,
-    )
-
-    n = logits.shape[1] - 1
-    nll = F.cross_entropy(
-        einops.rearrange(logits[:, :-1], "b n d -> (b n) d"),
-        einops.rearrange(input_ids[:, 1:], "b n -> (b n)"),
-        reduction="none",
-    )
-    nll = einops.rearrange(nll, "(b n) -> b n", n=n)
-    nll = torch.cat((torch.zeros((nll.shape[0], 1), device=nll.device), nll), dim=1)
-    epsilon = entropy - nll
     ret = {
         "input_ids": input_ids,
         "logits": logits,
+        "probs": probs,
+        "information": information,
         "nll": nll,
+        "avg_expected_information": avg_expected_information,
+        "information_correct": information_correct,
         "epsilon": epsilon,
         "tokens": tokens,
-        "q": q,
-        "entropy": entropy,
     }
 
     if to_device is not None:
         for k, v in ret.items():
             if k not in ["tokens", "q"]:
                 ret[k] = v.to(to_device)
+
     return ret
 
 
@@ -138,8 +176,16 @@ if __name__ == "__main__":
     model, tokenizer = load_model("EleutherAI/gpt-neo-1.3B")
 
     prompt = "Once upon a time there lived a princess"
+    info = get_typical_information(prompt, model, tokenizer)
 
-    info = typical_information(prompt, model, tokenizer)
+    b = 0
+    fig, ax = plot_info(
+        info["avg_expected_information"][b],
+        info["information_correct"][b],
+        epsilon=info["epsilon"][b],
+        tokens=info["tokens"][b][:-1],
+    )
+    plt.show()
 
     b = 0
     input_ids = info["input_ids"][0].cpu()
@@ -157,4 +203,9 @@ if __name__ == "__main__":
     print("epsilon: ", tuple(epsilon.shape))
     n = logits.shape[0]
 
-    # plot all info
+    # extract tokens
+    tokens = []
+    for b in range(input_ids.shape[0]):
+        tmp_tokens = tokenizer.convert_ids_to_tokens(input_ids[b])
+        tmp_tokens = [t.replace("Ġ", "") for t in tmp_tokens]
+        tokens.append(tmp_tokens)
